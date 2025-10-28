@@ -12,7 +12,7 @@ ENV_FILE = ".env"
 ENV_KEY_CMD = "CODEX_CLI"
 ENV_KEY_MODE = "CODEX_MODE"  # "exec" or "stdin"
 ENV_KEY_APPROVALS = "CODEX_APPROVALS"  # never|on-request|on-failure|untrusted
-ENV_KEY_NO_TUI = "CODEX_NO_TUI"  # "1" to add --no-tui
+ENV_KEY_NO_TUI = "CODEX_NO_TUI"  # "1" to prefer --no-tui when supported
 ENV_KEY_FULL_AUTO = "CODEX_FULL_AUTO"  # "1" to add --full-auto
 ENV_KEY_YOLO = "CODEX_YOLO"  # "1" to add --yolo (danger: disables sandbox + approvals)
 ENV_KEY_FLAGS = "CODEX_FLAGS"  # extra flags appended to command
@@ -66,7 +66,7 @@ def run_codex(prompt: str, cwd: Path) -> str:
     - Command: from `CODEX_CLI` or default `npx -y @openai/codex`.
     - Mode: `CODEX_MODE=exec|stdin` (default: exec).
     - Approvals: `CODEX_APPROVALS` sets `-a/--ask-for-approval <mode>` in exec mode.
-    - No TUI: `CODEX_NO_TUI=1` adds `--no-tui` when supported.
+    - No TUI: `CODEX_NO_TUI=1` prefers `--no-tui` when the CLI supports it.
     - Full auto: `CODEX_FULL_AUTO=1` adds `--full-auto` (equiv: sandbox workspace-write + approvals on-failure).
     - YOLO: `CODEX_YOLO=1` adds `--yolo` (danger: disables sandbox and approvals; overrides approvals flag here).
     - Extra flags: `CODEX_FLAGS` appended as-is in exec mode.
@@ -103,42 +103,112 @@ def run_codex(prompt: str, cwd: Path) -> str:
         )
 
     if mode == "exec":
-        # Build: <cli> exec -C <cwd> [--approvals <mode>] [--no-tui] [extra] -- <prompt>
         def q(s: str) -> str:
             return '"' + s.replace('"', '\\"') + '"'
 
-        parts: List[str] = [cmd_base, "exec", "-C", q(str(cwd))]
-        if resume_last:
-            parts += ["resume", "--last"]
-        if profile:
-            parts += ["--profile", q(profile)]
-        if yolo:
-            parts.append("--yolo")
-        elif approvals:
-            # Use short flag -a (alias of --ask-for-approval)
-            parts += ["-a", q(approvals)]
-        if no_tui:
-            parts.append("--no-tui")
-        if full_auto and not yolo:
-            parts.append("--full-auto")
-        if want_json:
-            parts.append("--json")
-        if out_path:
-            parts += ["-o", q(out_path)]
-        if extra:
-            parts.append(extra)
-        # Pass prompt as final quoted argument (no stdin)
-        parts.append(q(prompt))
-        cmd_str = " ".join(parts)
-        try:
-            proc = _popen(cmd_str, None)
-        except FileNotFoundError as exc:
-            return (
-                f"[ERREUR] Commande introuvable: {cmd_base}\n"
-                f"Vérifiez CODEX_CLI dans .env (ex.: npx -y @openai/codex).\n\n{exc}"
-            )
-        except Exception as exc:  # noqa: BLE001
-            return f"[ERREUR] Échec de lancement: {cmd_str}\n{exc}"
+        def build_cmd(use_cd_flag: bool, include_no_tui: bool) -> str:
+            cd_flag = "--cd" if use_cd_flag else "-C"
+            parts: List[str] = [cmd_base, "exec", cd_flag, q(str(cwd))]
+            if resume_last:
+                parts += ["resume", "--last"]
+            if profile:
+                parts += ["--profile", q(profile)]
+            if yolo:
+                parts.append("--yolo")
+            elif approvals:
+                parts += ["-a", q(approvals)]
+            if include_no_tui:
+                parts.append("--no-tui")
+            if full_auto and not yolo:
+                parts.append("--full-auto")
+            if want_json:
+                parts.append("--json")
+            if out_path:
+                parts += ["-o", q(out_path)]
+            if extra:
+                parts.append(extra)
+            parts.append(q(prompt))
+            return " ".join(parts)
+
+        def launch(cmd_str: str) -> subprocess.Popen:
+            try:
+                return _popen(cmd_str, None)
+            except FileNotFoundError as exc:
+                raise FileNotFoundError(
+                    f"[ERREUR] Commande introuvable: {cmd_base}\n"
+                    f"Vérifiez CODEX_CLI dans .env (ex.: npx -y @openai/codex).\n\n{exc}"
+                ) from exc
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError(f"[ERREUR] Échec de lancement: {cmd_str}\n{exc}") from exc
+
+        notes: List[str] = []
+        use_cd_flag = True
+        include_no_tui = no_tui
+        attempted_cd_fallback = False
+        attempted_no_tui_fallback = False
+
+        while True:
+            cmd_str = build_cmd(use_cd_flag, include_no_tui)
+            try:
+                proc = launch(cmd_str)
+            except (FileNotFoundError, RuntimeError) as exc:  # surface message as string
+                return str(exc)
+
+            try:
+                out, err = proc.communicate(timeout=120)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                return (
+                    "[ERREUR] Délai dépassé (120s) en attendant la réponse de Codex.\n"
+                    "Vérifiez la commande CODEX_CLI, le réseau et les flags."
+                )
+            except Exception as exc:  # noqa: BLE001
+                proc.kill()
+                return f"[ERREUR] Échec de la communication avec le processus Codex: {exc}"
+
+            err_text = (err or "").strip()
+            if (
+                include_no_tui
+                and not attempted_no_tui_fallback
+                and "--no-tui" in err_text
+                and "unexpected argument" in err_text.lower()
+            ):
+                attempted_no_tui_fallback = True
+                include_no_tui = False
+                notes.append(
+                    "[INFO] Relance sans --no-tui (non reconnu par cette version de Codex)."
+                )
+                continue
+
+            if (
+                use_cd_flag
+                and not attempted_cd_fallback
+                and "--cd" in err_text
+                and ("no such option" in err_text.lower() or "unknown option" in err_text.lower())
+            ):
+                attempted_cd_fallback = True
+                use_cd_flag = False
+                notes.append("[INFO] Relance avec -C (ancienne version du CLI détectée).")
+                continue
+
+            combined = (out or "").strip()
+            if err_text:
+                combined = (
+                    f"{combined}\n[stderr]\n{err_text}"
+                    if combined
+                    else f"[stderr]\n{err_text}"
+                )
+
+            if notes:
+                notes_text = "\n".join(notes)
+                combined = f"{notes_text}\n{combined}" if combined else notes_text
+
+            if proc.returncode not in (0, None):
+                combined = (
+                    f"[AVERTISSEMENT] Code de sortie {proc.returncode}.\n" + combined
+                )
+
+            return combined or "(aucune sortie)"
     else:
         # stdin mode
         cmd_str = cmd_base

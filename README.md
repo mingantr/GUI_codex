@@ -26,12 +26,14 @@ Une interface PyQt5 simple pour utiliser Codex: zone de prompt, zone de réponse
 ### Intégration Codex CLI
 L’application pilote Codex en mode non‑interactif via `codex exec` (par défaut) et passe le prompt comme argument, dans le dossier courant choisi. Vous pouvez aussi basculer en mode stdin.
 
+ℹ️ Compatibilité CLI: si la commande échoue avec `--no-tui` ou `--cd`, l’application relance automatiquement l’exécution sans ce flag ou avec l’ancien `-C`, afin de rester compatible avec les versions récentes et historiques du binaire.
+
 1) Configurez `.env` (copiez d’abord `.env.example`):
 
    - Commande: `CODEX_CLI=npx -y @openai/codex` (ou `codex` si présent dans le PATH)
    - Mode: `CODEX_MODE=exec` (par défaut) ou `stdin`
    - Approvals: `CODEX_APPROVALS=on-request` (transmis en `-a/--ask-for-approval`), ou via la liste déroulante de l’UI
-   - Sans TUI: `CODEX_NO_TUI=1` ajoute `--no-tui` en mode exec
+   - Sans TUI: `CODEX_NO_TUI=1` tente `--no-tui` en mode exec (repli automatique si non reconnu)
    - Full auto (optionnel): `CODEX_FULL_AUTO=1` ajoute `--full-auto` (≡ sandbox workspace-write + approvals on-failure)
    - YOLO (dangereux): `CODEX_YOLO=1` ajoute `--yolo` (désactive sandbox + approvals)
    - Profil: `CODEX_PROFILE=my-profile` (ajoute `--profile my-profile`)
