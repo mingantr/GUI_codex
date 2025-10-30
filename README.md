@@ -28,11 +28,59 @@ L’application pilote Codex en mode non‑interactif via `codex exec` (par déf
 
 ℹ️ Compatibilité CLI: si la commande échoue avec `--no-tui` ou `--cd`, l’application relance automatiquement l’exécution sans ce flag ou avec l’ancien `-C`, afin de rester compatible avec les versions récentes et historiques du binaire.
 
+#### Lancer des slash-commands hors TUI
+Les slash-commands (`/init`, `/status`, `/approvals`, `/model`, etc.) sont uniquement du texte injecté au début du prompt. Hors session interactive, il suffit de les inclure dans l’argument transmis à `codex exec`.
+
+```powershell
+codex exec -C "D:\devs\mon_projet" `
+  -m gpt-5-codex `
+  -s workspace-write `
+  -a on-request `
+  "/init fastapi --package taolenn_api --with-tests
+  Configure un endpoint /healthz et un CI GitHub Actions"
+```
+
+Depuis Python, même principe via `subprocess.run`:
+
+```python
+import subprocess
+import textwrap
+
+prompt = textwrap.dedent(
+    """
+/init react vite typescript --eslint --vitest
+Ajoute un formulaire de login (mock) et une page /about.
+"""
+)
+result = subprocess.run(
+    [
+        "codex",
+        "exec",
+        "-C",
+        "D:\\devs\\mon_app",
+        "-m",
+        "gpt-5-codex",
+        "-s",
+        "workspace-write",
+        "-a",
+        "on-request",
+        prompt,
+    ],
+    capture_output=True,
+    text=True,
+)
+print(result.stdout)
+```
+
+Les commandes sont interprétées côté agent exactement comme dans la TUI.
+
 1) Configurez `.env` (copiez d’abord `.env.example`):
 
    - Commande: `CODEX_CLI=npx -y @openai/codex` (ou `codex` si présent dans le PATH)
    - Mode: `CODEX_MODE=exec` (par défaut) ou `stdin`
    - Approvals: `CODEX_APPROVALS=on-request` (transmis en `-a/--ask-for-approval`), ou via la liste déroulante de l’UI
+   - Sandbox: `CODEX_SANDBOX=workspace-write` ajoute `-s/--sandbox workspace-write`
+   - Modèle: `CODEX_MODEL=gpt-5-codex` ajoute `-m/--model`
    - Sans TUI: `CODEX_NO_TUI=1` tente `--no-tui` en mode exec (repli automatique si non reconnu)
    - Full auto (optionnel): `CODEX_FULL_AUTO=1` ajoute `--full-auto` (≡ sandbox workspace-write + approvals on-failure)
    - YOLO (dangereux): `CODEX_YOLO=1` ajoute `--yolo` (désactive sandbox + approvals)
@@ -41,15 +89,23 @@ L’application pilote Codex en mode non‑interactif via `codex exec` (par déf
    - Sortie: `CODEX_OUTPUT=path\to\last.txt` (ajoute `-o <path>`)
    - Reprendre: `CODEX_RESUME_LAST=1` (ajoute `exec resume --last`)
    - Flags extra: `CODEX_FLAGS=...` pour transmettre des options supplémentaires
+   - Shell forcé: `CODEX_USE_SHELL=1` exécute via `shell=True` (par défaut seulement sur Windows lorsque nécessaire)
 
 2) Variables nécessaires (ex. `OPENAI_API_KEY`) si votre outil en requiert.
 
 3) Lancez l’app (`run.bat`). Au clic sur « Envoyer », la sortie stdout/stderr est affichée. Timeout 120s.
 
-Notes:
-- Les « slash‑commands » comme `/init` et `/status` sont insérées au début du prompt depuis l’UI.
-- La politique d’« approvals » se règle via la liste déroulante (ou `CODEX_APPROVALS` → `-a`).
- - L’UI propose aussi: JSON, Profil, Resume --last, et un sélecteur de fichier pour `-o`.
+#### Approvals & sandbox
+- `-a/--ask-for-approval`: valeurs `never`, `on-request`, `on-failure`, `untrusted` pour contrôler quand l’agent s’arrête.
+- `-s/--sandbox`: choisissez `sandbox`, `workspace-write`, `workspace-read`, etc., selon le niveau d’accès disque souhaité.
+- `--full-auto`: équivaut à `-s workspace-write` + `-a on-failure`.
+- `--yolo`: désactive sandbox et approvals (dangereux, à réserver aux environnements de test).
+
+#### Sorties scriptables
+- `--json`: flux d’événements JSONL pour chaîner l’exécution dans vos outils.
+- `-o <path>`: sauvegarde le dernier message (exposé via le bouton « Sortie » de l’UI).
+- `exec resume --last`: relance la dernière exécution (coche « Resume --last »).
+- `codex exec --json --output events.jsonl "..."`: capture structurée prête pour CI/CD.
 
 ### Configuration persistante de Codex
 Codex peut aussi lire un fichier de configuration persistant:

@@ -20,6 +20,9 @@ ENV_KEY_PROFILE = "CODEX_PROFILE"  # --profile <name>
 ENV_KEY_JSON = "CODEX_JSON"  # "1" to add --json
 ENV_KEY_OUTPUT = "CODEX_OUTPUT"  # -o <path>
 ENV_KEY_RESUME_LAST = "CODEX_RESUME_LAST"  # "1" to use: exec resume --last
+ENV_KEY_MODEL = "CODEX_MODEL"  # -m/--model <name>
+ENV_KEY_SANDBOX = "CODEX_SANDBOX"  # -s/--sandbox <mode>
+ENV_KEY_USE_SHELL = "CODEX_USE_SHELL"  # "1" to force shell execution
 
 
 def _load_env(root: Path) -> None:
@@ -52,8 +55,6 @@ def _load_env(root: Path) -> None:
 def _split_command(cmd: str) -> List[str]:
     """Split command string into args. Use Windows-compatible splitting."""
 
-    # On Windows, many commands are batch files; we'll prefer shell=True later
-    # but still provide a parsed argv when possible.
     try:
         return shlex.split(cmd, posix=(os.name != "nt"))
     except Exception:
@@ -66,10 +67,13 @@ def run_codex(prompt: str, cwd: Path) -> str:
     - Command: from `CODEX_CLI` or default `npx -y @openai/codex`.
     - Mode: `CODEX_MODE=exec|stdin` (default: exec).
     - Approvals: `CODEX_APPROVALS` sets `-a/--ask-for-approval <mode>` in exec mode.
+    - Sandbox: `CODEX_SANDBOX` adds `-s/--sandbox <mode>`.
+    - Model: `CODEX_MODEL` adds `-m/--model <name>`.
     - No TUI: `CODEX_NO_TUI=1` prefers `--no-tui` when the CLI supports it.
     - Full auto: `CODEX_FULL_AUTO=1` adds `--full-auto` (equiv: sandbox workspace-write + approvals on-failure).
     - YOLO: `CODEX_YOLO=1` adds `--yolo` (danger: disables sandbox and approvals; overrides approvals flag here).
     - Extra flags: `CODEX_FLAGS` appended as-is in exec mode.
+    - Force shell: `CODEX_USE_SHELL=1` keeps `shell=True` (auto-fallback on Windows when absent).
     The prompt is passed as an argument in exec mode, or via stdin otherwise.
     """
 
@@ -77,6 +81,7 @@ def run_codex(prompt: str, cwd: Path) -> str:
     _load_env(root)
 
     cmd_base = os.environ.get(ENV_KEY_CMD, "npx -y @openai/codex")
+    cmd_base_args = _split_command(cmd_base)
     mode = (os.environ.get(ENV_KEY_MODE, "exec") or "exec").lower()
     approvals = (os.environ.get(ENV_KEY_APPROVALS, "") or "").strip()
     no_tui = (os.environ.get(ENV_KEY_NO_TUI, "1") == "1")
@@ -87,13 +92,33 @@ def run_codex(prompt: str, cwd: Path) -> str:
     want_json = (os.environ.get(ENV_KEY_JSON, "0") == "1")
     out_path = (os.environ.get(ENV_KEY_OUTPUT, "") or "").strip()
     resume_last = (os.environ.get(ENV_KEY_RESUME_LAST, "0") == "1")
+    model = (os.environ.get(ENV_KEY_MODEL, "") or "").strip()
+    sandbox = (os.environ.get(ENV_KEY_SANDBOX, "") or "").strip()
+    shell_pref = os.environ.get(ENV_KEY_USE_SHELL, "").strip()
 
-    use_shell = os.name == "nt"
+    if not cmd_base_args:
+        raise RuntimeError("CODEX_CLI ne peut pas être vide.")
 
-    def _popen(cmd: str, stdin_text: Optional[str]) -> subprocess.Popen:
-        argv: Optional[List[str]] = None if use_shell else _split_command(cmd)
+    if shell_pref == "1":
+        prefer_shell = True
+        allow_shell_retry = False
+    elif shell_pref == "0":
+        prefer_shell = False
+        allow_shell_retry = False
+    else:
+        prefer_shell = os.name == "nt"
+        allow_shell_retry = os.name == "nt"
+
+    def _format_for_shell(args: List[str]) -> str:
+        if os.name == "nt":
+            from subprocess import list2cmdline
+
+            return list2cmdline(args)
+        return shlex.join(args)
+
+    def _spawn(args: List[str], stdin_text: Optional[str], use_shell: bool) -> subprocess.Popen:
         return subprocess.Popen(
-            argv or cmd,
+            _format_for_shell(args) if use_shell else args,
             cwd=str(cwd),
             stdin=(subprocess.PIPE if stdin_text is not None else None),
             stdout=subprocess.PIPE,
@@ -102,55 +127,76 @@ def run_codex(prompt: str, cwd: Path) -> str:
             shell=use_shell,
         )
 
-    if mode == "exec":
-        def q(s: str) -> str:
-            return '"' + s.replace('"', '\\"') + '"'
+    def _launch_with_shell(
+        args: List[str],
+        stdin_text: Optional[str],
+        notes: Optional[List[str]] = None,
+    ) -> subprocess.Popen:
+        try:
+            return _spawn(args, stdin_text, prefer_shell)
+        except FileNotFoundError as exc:
+            if not prefer_shell and allow_shell_retry:
+                try:
+                    proc = _spawn(args, stdin_text, True)
+                except FileNotFoundError:
+                    pass
+                else:
+                    if notes is not None:
+                        notes.append(
+                            "[INFO] Relance via shell=True (CODEX_CLI nécessite l'interpréteur)."
+                        )
+                    return proc
+            raise FileNotFoundError(
+                f"[ERREUR] Commande introuvable: {cmd_base}\n"
+                f"Vérifiez CODEX_CLI dans .env (ex.: npx -y @openai/codex).\n\n{exc}"
+            ) from exc
+        except Exception as exc:  # noqa: BLE001
+            pretty = " ".join(args)
+            raise RuntimeError(
+                f"[ERREUR] Échec de lancement: {pretty}\n{exc}"
+            ) from exc
 
-        def build_cmd(use_cd_flag: bool, include_no_tui: bool) -> str:
+    notes_output: List[str] = []
+
+    if mode == "exec":
+        def build_cmd(use_cd_flag: bool, include_no_tui: bool) -> List[str]:
             cd_flag = "--cd" if use_cd_flag else "-C"
-            parts: List[str] = [cmd_base, "exec", cd_flag, q(str(cwd))]
+            parts: List[str] = [*cmd_base_args, "exec", cd_flag, str(cwd)]
             if resume_last:
                 parts += ["resume", "--last"]
             if profile:
-                parts += ["--profile", q(profile)]
+                parts += ["--profile", profile]
             if yolo:
                 parts.append("--yolo")
             elif approvals:
-                parts += ["-a", q(approvals)]
+                parts += ["-a", approvals]
             if include_no_tui:
                 parts.append("--no-tui")
             if full_auto and not yolo:
                 parts.append("--full-auto")
+            if sandbox:
+                parts += ["-s", sandbox]
+            if model:
+                parts += ["-m", model]
             if want_json:
                 parts.append("--json")
             if out_path:
-                parts += ["-o", q(out_path)]
+                parts += ["-o", out_path]
             if extra:
-                parts.append(extra)
-            parts.append(q(prompt))
-            return " ".join(parts)
+                parts.extend(_split_command(extra))
+            parts.append(prompt)
+            return parts
 
-        def launch(cmd_str: str) -> subprocess.Popen:
-            try:
-                return _popen(cmd_str, None)
-            except FileNotFoundError as exc:
-                raise FileNotFoundError(
-                    f"[ERREUR] Commande introuvable: {cmd_base}\n"
-                    f"Vérifiez CODEX_CLI dans .env (ex.: npx -y @openai/codex).\n\n{exc}"
-                ) from exc
-            except Exception as exc:  # noqa: BLE001
-                raise RuntimeError(f"[ERREUR] Échec de lancement: {cmd_str}\n{exc}") from exc
-
-        notes: List[str] = []
+        notes = notes_output
         use_cd_flag = True
         include_no_tui = no_tui
         attempted_cd_fallback = False
         attempted_no_tui_fallback = False
 
         while True:
-            cmd_str = build_cmd(use_cd_flag, include_no_tui)
+            cmd_args = build_cmd(use_cd_flag, include_no_tui)
             try:
-                proc = launch(cmd_str)
+                proc = _launch_with_shell(cmd_args, None, notes)
             except (FileNotFoundError, RuntimeError) as exc:  # surface message as string
                 return str(exc)
 
@@ -199,8 +245,8 @@ def run_codex(prompt: str, cwd: Path) -> str:
                     else f"[stderr]\n{err_text}"
                 )
 
-            if notes:
-                notes_text = "\n".join(notes)
+            if notes_output:
+                notes_text = "\n".join(notes_output)
                 combined = f"{notes_text}\n{combined}" if combined else notes_text
 
             if proc.returncode not in (0, None):
@@ -211,16 +257,11 @@ def run_codex(prompt: str, cwd: Path) -> str:
             return combined or "(aucune sortie)"
     else:
         # stdin mode
-        cmd_str = cmd_base
+        stdin_payload = prompt + "\n"
         try:
-            proc = _popen(cmd_str, prompt + "\n")
-        except FileNotFoundError as exc:
-            return (
-                f"[ERREUR] Commande introuvable: {cmd_base}\n"
-                f"Vérifiez CODEX_CLI dans .env (ex.: npx -y @openai/codex).\n\n{exc}"
-            )
-        except Exception as exc:  # noqa: BLE001
-            return f"[ERREUR] Échec de lancement: {cmd_str}\n{exc}"
+            proc = _launch_with_shell(cmd_base_args, stdin_payload, notes_output)
+        except (FileNotFoundError, RuntimeError) as exc:
+            return str(exc)
 
     try:
         inp = None if mode == "exec" else (prompt + "\n")
@@ -238,6 +279,9 @@ def run_codex(prompt: str, cwd: Path) -> str:
     combined = (out or "").strip()
     if err:
         combined = f"{combined}\n[stderr]\n{err.strip()}" if combined else f"[stderr]\n{err.strip()}"
+    if notes_output:
+        notes_text = "\n".join(notes_output)
+        combined = f"{notes_text}\n{combined}" if combined else notes_text
     if proc.returncode not in (0, None):
         combined = (
             f"[AVERTISSEMENT] Code de sortie {proc.returncode}.\n" + combined
