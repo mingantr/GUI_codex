@@ -169,7 +169,7 @@ def run_codex(prompt: str, cwd: Path) -> str:
             if yolo:
                 parts.append("--yolo")
             elif approvals:
-                parts += ["-a", approvals]
+                parts += ["--ask-for-approval", approvals]
             if include_no_tui:
                 parts.append("--no-tui")
             if full_auto and not yolo:
@@ -239,6 +239,14 @@ def run_codex(prompt: str, cwd: Path) -> str:
 
             combined = (out or "").strip()
             if err_text:
+                if "not inside a trusted directory" in err_text.lower():
+                    notes.append(
+                        "[INFO] Codex a bloqué l'exécution car le dossier n'est pas considéré comme\n"
+                        "trusted. Options possibles :\n"
+                        "  1) relancer avec --skip-git-repo-check pour contourner la vérification ;\n"
+                        "  2) initialiser un dépôt Git dans ce dossier (git init && git add . && git commit) ;\n"
+                        "  3) déclarer le chemin dans ~/.codex/config.toml (section [trust], ou %USERPROFILE%\\.codex\\config.toml sous Windows)."
+                    )
                 combined = (
                     f"{combined}\n[stderr]\n{err_text}"
                     if combined

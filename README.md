@@ -78,7 +78,7 @@ Les commandes sont interprétées côté agent exactement comme dans la TUI.
 
    - Commande: `CODEX_CLI=npx -y @openai/codex` (ou `codex` si présent dans le PATH)
    - Mode: `CODEX_MODE=exec` (par défaut) ou `stdin`
-   - Approvals: `CODEX_APPROVALS=on-request` (transmis en `-a/--ask-for-approval`), ou via la liste déroulante de l’UI
+   - Approvals: `CODEX_APPROVALS=on-request` (transmis en `--ask-for-approval`), ou via la liste déroulante de l’UI
    - Sandbox: `CODEX_SANDBOX=workspace-write` ajoute `-s/--sandbox workspace-write`
    - Modèle: `CODEX_MODEL=gpt-5-codex` ajoute `-m/--model`
    - Sans TUI: `CODEX_NO_TUI=1` tente `--no-tui` en mode exec (repli automatique si non reconnu)
@@ -96,7 +96,7 @@ Les commandes sont interprétées côté agent exactement comme dans la TUI.
 3) Lancez l’app (`run.bat`). Au clic sur « Envoyer », la sortie stdout/stderr est affichée. Timeout 120s.
 
 #### Approvals & sandbox
-- `-a/--ask-for-approval`: valeurs `never`, `on-request`, `on-failure`, `untrusted` pour contrôler quand l’agent s’arrête.
+- `--ask-for-approval`: valeurs `never`, `on-request`, `on-failure`, `untrusted` pour contrôler quand l’agent s’arrête (les longs flags sont utilisés pour plus de lisibilité dans les commandes générées).
 - `-s/--sandbox`: choisissez `sandbox`, `workspace-write`, `workspace-read`, etc., selon le niveau d’accès disque souhaité.
 - `--full-auto`: équivaut à `-s workspace-write` + `-a on-failure`.
 - `--yolo`: désactive sandbox et approvals (dangereux, à réserver aux environnements de test).
@@ -125,6 +125,13 @@ L’UI/Backend n’écrivent pas ce fichier; c’est lu côté Codex CLI.
 - Sortie JSONL: cochez "JSON" dans l'UI ou `CODEX_JSON=1` pour `--json`.
 - Sauvegarder le dernier message: utilisez le bouton "Sortie" (ajoute `-o <path>`), ou `CODEX_OUTPUT`.
 - Reprendre une exécution: cochez "Resume --last" (ajoute `exec resume --last`) et entrez un prompt de continuation.
+
+#### Erreur « Not inside a trusted directory »
+Lorsque Codex retourne ce message (ou l’équivalent localisé), le dossier courant n’est pas marqué comme sûr. Trois solutions possibles:
+1. Relancer avec `--skip-git-repo-check` si vous acceptez de contourner la vérification ponctuellement.
+2. Initialiser un dépôt Git dans le dossier (`git init && git add . && git commit`) pour que Codex le considère comme versionné.
+3. Ajouter le chemin à la section `[trust]` de `~/.codex/config.toml` (ou `%USERPROFILE%\.codex\config.toml` sous Windows).
+Le backend affiche automatiquement ce rappel lorsqu’il détecte cette erreur.
 
 ## Captures d’écran
 ![Aperçu](assets/screenshot.png)
