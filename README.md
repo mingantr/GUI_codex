@@ -21,6 +21,7 @@ Une interface PyQt5 simple pour utiliser Codex: zone de prompt, zone de réponse
 ## Utilisation
 - Dossier: sélectionner via le bouton « Changer… » ou choisir dans l'historique.
 - Cases: cochez `/init`, `/status`, `JSON`, `Resume --last` (présentées en 2 colonnes) pour préfixer le prompt ou ajuster la sortie.
+- Approvals: choisissez « Ask », « Auto » ou « Full Access » dans la liste déroulante. Chaque option décrit exactement les permissions accordées (texte identique au CLI non interactif).
 - Envoyer: cliquez « Envoyer » ou utilisez Ctrl+Enter. L’appli transmet désormais le prompt au Codex CLI configuré (voir ci‑dessous) et affiche la sortie capturée.
 
 ### Historique et base de données
@@ -83,7 +84,8 @@ Les commandes sont interprétées côté agent exactement comme dans la TUI.
 
    - Commande: `CODEX_CLI=npx -y @openai/codex` (ou `codex` si présent dans le PATH)
    - Mode: `CODEX_MODE=exec` (par défaut) ou `stdin`
-   - Approvals: `CODEX_APPROVALS=on-request` (transmis en `--ask-for-approval`), ou via la liste déroulante de l’UI
+   - Approvals modernes: `CODEX_APPROVAL_MODE=auto` (transmis en `--approval-mode`; l’UI utilise cette valeur)
+   - Approvals legacy: `CODEX_APPROVALS=on-request` (repli automatique si `--approval-mode` n’est pas reconnu)
    - Sandbox: `CODEX_SANDBOX=workspace-write` ajoute `-s/--sandbox workspace-write`
    - Modèle: `CODEX_MODEL=gpt-5-codex` ajoute `-m/--model`
    - Sans TUI: `CODEX_NO_TUI=1` tente `--no-tui` en mode exec (repli automatique si non reconnu)
@@ -101,7 +103,8 @@ Les commandes sont interprétées côté agent exactement comme dans la TUI.
 3) Lancez l’app (`run.bat`). Au clic sur « Envoyer », la sortie stdout/stderr est affichée. Timeout 120s.
 
 #### Approvals & sandbox
-- `--ask-for-approval`: valeurs `never`, `on-request`, `on-failure`, `untrusted` pour contrôler quand l’agent s’arrête (les longs flags sont utilisés pour plus de lisibilité dans les commandes générées).
+- `--approval-mode`: valeurs `ask`, `auto`, `full-access`. L’UI expose ces modes avec le même texte explicatif que le CLI (par ex. « Auto – Codex can read files, make edits... »).
+- `--ask-for-approval`: valeurs `never`, `on-request`, `on-failure`, `untrusted` (utilisées automatiquement si le CLI ne connaît pas encore `--approval-mode`).
 - `-s/--sandbox`: choisissez `sandbox`, `workspace-write`, `workspace-read`, etc., selon le niveau d’accès disque souhaité.
 - `--full-auto`: équivaut à `-s workspace-write` + `-a on-failure`.
 - `--yolo`: désactive sandbox et approvals (dangereux, à réserver aux environnements de test).
@@ -132,11 +135,10 @@ L’UI/Backend n’écrivent pas ce fichier; c’est lu côté Codex CLI.
 - Reprendre une exécution: cochez "Resume --last" (ajoute `exec resume --last`) et entrez un prompt de continuation.
 
 #### Erreur « Not inside a trusted directory »
-Lorsque Codex retourne ce message (ou l’équivalent localisé), le dossier courant n’est pas marqué comme sûr. Trois solutions possibles:
-1. Relancer avec `--skip-git-repo-check` si vous acceptez de contourner la vérification ponctuellement.
+Lorsque Codex retourne ce message (ou l’équivalent localisé), le dossier courant n’est pas marqué comme sûr. Le backend relance automatiquement la commande avec `--skip-git-repo-check` (mode `auto` par défaut) et affiche une note informative. Si la vérification reste bloquante, appliquez l’une des solutions suivantes:
+1. Relancer avec `--skip-git-repo-check` forcé (`CODEX_SKIP_GIT_CHECK=1`) pour contourner la vérification.
 2. Initialiser un dépôt Git dans le dossier (`git init && git add . && git commit`) pour que Codex le considère comme versionné.
 3. Ajouter le chemin à la section `[trust]` de `~/.codex/config.toml` (ou `%USERPROFILE%\.codex\config.toml` sous Windows).
-Le backend affiche automatiquement ce rappel lorsqu’il détecte cette erreur.
 
 ## Captures d’écran
 ![Aperçu](assets/screenshot.png)

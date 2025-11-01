@@ -25,9 +25,11 @@ from .database import ensure_database, save_exchange
 from .database_dialog import DatabaseDialog
 from .state import (
     add_dir_to_history,
+    get_approval_mode,
     get_current_dir,
     get_database_path,
     get_dir_history,
+    set_approval_mode,
     set_current_dir,
     set_database_path,
 )
@@ -99,12 +101,28 @@ class CodexPanel(QWidget):
         opts.setSpacing(12)
 
         self.combo_approvals = QComboBox(self)
-        self.combo_approvals.setMinimumWidth(180)
-        self.combo_approvals.addItem("Approvals: auto", "")
-        self.combo_approvals.addItem("Approvals: never", "never")
-        self.combo_approvals.addItem("Approvals: on-request", "on-request")
-        self.combo_approvals.addItem("Approvals: on-failure", "on-failure")
-        self.combo_approvals.addItem("Approvals: untrusted", "untrusted")
+        self.combo_approvals.setMinimumWidth(220)
+        self.combo_approvals.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        approval_options = [
+            (
+                "Ask – Codex can read files and answer questions.\n"
+                "Codex requires approval to make edits, run commands, or access network.",
+                ("ask", "on-request"),
+            ),
+            (
+                "Auto – Codex can read files, make edits, and run commands in the workspace.\n"
+                "Codex requires approval to work outside the workspace or access network.",
+                ("auto", ""),
+            ),
+            (
+                "Full Access – Codex can read files, make edits, and run commands with network access, without approval.",
+                ("full-access", "never"),
+            ),
+        ]
+        for idx, (label, data) in enumerate(approval_options):
+            self.combo_approvals.addItem(label, data)
+            self.combo_approvals.setItemData(idx, label, Qt.ToolTipRole)
+        self.combo_approvals.setCurrentIndex(1)
         opts.addWidget(self.combo_approvals)
 
         self.edit_profile = QLineEdit(self)
@@ -180,6 +198,7 @@ class CodexPanel(QWidget):
         cur = get_current_dir()
         self._set_current_dir(cur)
         self._load_database_path()
+        self._load_approval_mode()
 
     def _set_current_dir(self, path: Path) -> None:
         # Persist and refresh history
@@ -250,6 +269,14 @@ class CodexPanel(QWidget):
         set_database_path(ensured)
         self._update_database_path_display()
 
+    def _load_approval_mode(self) -> None:
+        wanted = get_approval_mode()
+        for idx in range(self.combo_approvals.count()):
+            data = self.combo_approvals.itemData(idx)
+            if isinstance(data, tuple) and data and data[0] == wanted:
+                self.combo_approvals.setCurrentIndex(idx)
+                break
+
     def _open_database(self) -> None:
         if self._database_path is None:
             QMessageBox.information(
@@ -296,12 +323,16 @@ class CodexPanel(QWidget):
                 # Pass approvals via environment for the backend
                 import os
 
-                appr = self.combo_approvals.currentData()
-                if appr:
-                    os.environ["CODEX_APPROVALS"] = str(appr)
+                mode, legacy = self._selected_approval_mode()
+                if mode:
+                    os.environ["CODEX_APPROVAL_MODE"] = mode
                 else:
-                    # Ensure default behavior if previously set
+                    os.environ.pop("CODEX_APPROVAL_MODE", None)
+                if legacy:
+                    os.environ["CODEX_APPROVALS"] = legacy
+                else:
                     os.environ.pop("CODEX_APPROVALS", None)
+                set_approval_mode(mode or "auto")
                 # Force non-interactive exec mode by default
                 os.environ.setdefault("CODEX_MODE", "exec")
                 os.environ.setdefault("CODEX_NO_TUI", "1")
@@ -335,6 +366,13 @@ class CodexPanel(QWidget):
         self._log_exchange(msg, out)
 
     # Helpers
+    def _selected_approval_mode(self) -> tuple[str, str]:
+        data = self.combo_approvals.currentData()
+        if isinstance(data, tuple) and len(data) == 2:
+            mode, legacy = data
+            return str(mode), str(legacy)
+        return ("auto", "")
+
     def _append_info(self, text: str) -> None:
         stamp = datetime.now().strftime("%H:%M:%S")
         self.response.appendPlainText(f"[{stamp}] {text}")

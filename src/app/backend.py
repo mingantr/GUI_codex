@@ -11,7 +11,8 @@ from typing import List, Optional
 ENV_FILE = ".env"
 ENV_KEY_CMD = "CODEX_CLI"
 ENV_KEY_MODE = "CODEX_MODE"  # "exec" or "stdin"
-ENV_KEY_APPROVALS = "CODEX_APPROVALS"  # never|on-request|on-failure|untrusted
+ENV_KEY_APPROVALS = "CODEX_APPROVALS"  # legacy flag for --ask-for-approval
+ENV_KEY_APPROVAL_MODE = "CODEX_APPROVAL_MODE"  # ask|auto|full-access
 ENV_KEY_NO_TUI = "CODEX_NO_TUI"  # "1" to prefer --no-tui when supported
 ENV_KEY_FULL_AUTO = "CODEX_FULL_AUTO"  # "1" to add --full-auto
 ENV_KEY_YOLO = "CODEX_YOLO"  # "1" to add --yolo (danger: disables sandbox + approvals)
@@ -23,6 +24,7 @@ ENV_KEY_RESUME_LAST = "CODEX_RESUME_LAST"  # "1" to use: exec resume --last
 ENV_KEY_MODEL = "CODEX_MODEL"  # -m/--model <name>
 ENV_KEY_SANDBOX = "CODEX_SANDBOX"  # -s/--sandbox <mode>
 ENV_KEY_USE_SHELL = "CODEX_USE_SHELL"  # "1" to force shell execution
+ENV_KEY_SKIP_GIT_CHECK = "CODEX_SKIP_GIT_CHECK"  # "1" or "auto" to add --skip-git-repo-check
 
 
 def _load_env(root: Path) -> None:
@@ -84,6 +86,7 @@ def run_codex(prompt: str, cwd: Path) -> str:
     cmd_base_args = _split_command(cmd_base)
     mode = (os.environ.get(ENV_KEY_MODE, "exec") or "exec").lower()
     approvals = (os.environ.get(ENV_KEY_APPROVALS, "") or "").strip()
+    approval_mode = (os.environ.get(ENV_KEY_APPROVAL_MODE, "") or "").strip()
     no_tui = (os.environ.get(ENV_KEY_NO_TUI, "1") == "1")
     full_auto = (os.environ.get(ENV_KEY_FULL_AUTO, "0") == "1")
     yolo = (os.environ.get(ENV_KEY_YOLO, "0") == "1")
@@ -95,6 +98,12 @@ def run_codex(prompt: str, cwd: Path) -> str:
     model = (os.environ.get(ENV_KEY_MODEL, "") or "").strip()
     sandbox = (os.environ.get(ENV_KEY_SANDBOX, "") or "").strip()
     shell_pref = os.environ.get(ENV_KEY_USE_SHELL, "").strip()
+    skip_git_pref = (os.environ.get(ENV_KEY_SKIP_GIT_CHECK, "") or "").strip().lower()
+
+    SKIP_TRUE = {"1", "true", "yes", "always", "force"}
+    SKIP_FALSE = {"0", "false", "no", "never", "off"}
+    include_skip_git = skip_git_pref in SKIP_TRUE
+    allow_skip_git_fallback = skip_git_pref not in SKIP_TRUE and skip_git_pref not in SKIP_FALSE
 
     if not cmd_base_args:
         raise RuntimeError("CODEX_CLI ne peut pas être vide.")
@@ -159,7 +168,11 @@ def run_codex(prompt: str, cwd: Path) -> str:
     notes_output: List[str] = []
 
     if mode == "exec":
-        def build_cmd(use_cd_flag: bool, include_no_tui: bool) -> List[str]:
+        def build_cmd(
+            use_cd_flag: bool,
+            include_no_tui: bool,
+            include_skip_git_flag: bool,
+        ) -> List[str]:
             cd_flag = "--cd" if use_cd_flag else "-C"
             parts: List[str] = [*cmd_base_args, "exec", cd_flag, str(cwd)]
             if resume_last:
@@ -168,6 +181,8 @@ def run_codex(prompt: str, cwd: Path) -> str:
                 parts += ["--profile", profile]
             if yolo:
                 parts.append("--yolo")
+            elif approval_mode:
+                parts += ["--approval-mode", approval_mode]
             elif approvals:
                 parts += ["--ask-for-approval", approvals]
             if include_no_tui:
@@ -184,17 +199,22 @@ def run_codex(prompt: str, cwd: Path) -> str:
                 parts += ["-o", out_path]
             if extra:
                 parts.extend(_split_command(extra))
+            if include_skip_git_flag:
+                parts.append("--skip-git-repo-check")
             parts.append(prompt)
             return parts
 
         notes = notes_output
         use_cd_flag = True
         include_no_tui = no_tui
+        include_skip_git_flag = include_skip_git
         attempted_cd_fallback = False
         attempted_no_tui_fallback = False
+        attempted_skip_git_fallback = include_skip_git
+        attempted_approval_mode_fallback = False
 
         while True:
-            cmd_args = build_cmd(use_cd_flag, include_no_tui)
+            cmd_args = build_cmd(use_cd_flag, include_no_tui, include_skip_git_flag)
             try:
                 proc = _launch_with_shell(cmd_args, None, notes)
             except (FileNotFoundError, RuntimeError) as exc:  # surface message as string
@@ -237,9 +257,42 @@ def run_codex(prompt: str, cwd: Path) -> str:
                 notes.append("[INFO] Relance avec -C (ancienne version du CLI détectée).")
                 continue
 
+            if (
+                approval_mode
+                and not attempted_approval_mode_fallback
+                and "--approval-mode" in err_text
+                and ("no such option" in err_text.lower() or "unknown option" in err_text.lower())
+            ):
+                attempted_approval_mode_fallback = True
+                legacy_map = {
+                    "ask": "on-request",
+                    "auto": "",
+                    "full-access": "never",
+                }
+                legacy_value = legacy_map.get(approval_mode, "")
+                if legacy_value:
+                    approvals = legacy_value
+                    notes.append(
+                        "[INFO] Relance avec --ask-for-approval (CLI sans --approval-mode)."
+                    )
+                else:
+                    approvals = ""
+                    notes.append(
+                        "[INFO] Relance sans --approval-mode (CLI historique détecté)."
+                    )
+                approval_mode = ""
+                continue
+
             combined = (out or "").strip()
             if err_text:
                 if "not inside a trusted directory" in err_text.lower():
+                    if allow_skip_git_fallback and not attempted_skip_git_fallback:
+                        attempted_skip_git_fallback = True
+                        include_skip_git_flag = True
+                        notes.append(
+                            "[INFO] Relance avec --skip-git-repo-check (dossier non approuvé)."
+                        )
+                        continue
                     notes.append(
                         "[INFO] Codex a bloqué l'exécution car le dossier n'est pas considéré comme\n"
                         "trusted. Options possibles :\n"
