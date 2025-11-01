@@ -44,7 +44,7 @@ def run_codex(
     prompt: str,
     project_dir: Optional[str] = None,
     model: Optional[str] = None,
-    approval_mode: str = "full-auto",
+    approval_mode: str = "auto",
     skip_git_repo_check: bool = True,
     quiet: bool = True,
     json_events: bool = False,
@@ -57,6 +57,11 @@ def run_codex(
     support thread so the wrapper can be copied as-is.  The ``--`` separator is
     injected automatically to guarantee every flag is forwarded to the agent
     itself, avoiding the "unexpected argument" error seen on older CLI builds.
+
+    ``approval_mode`` accepts the modern presets (``"ask"``, ``"auto"``,
+    ``"full-access"``) and maps them to ``--ask-for-approval`` values understood
+    by historical CLIs.  Legacy strings such as ``"on-request"`` or
+    ``"never"`` are forwarded untouched.
     """
 
     codex_path = _ensure_codex_binary()
@@ -69,7 +74,15 @@ def run_codex(
     cmd.append("--")
 
     if approval_mode:
-        cmd += ["--approval-mode", approval_mode]
+        normalized = approval_mode.strip().lower()
+        legacy_map = {
+            "ask": "on-request",
+            "auto": "",
+            "full-access": "never",
+        }
+        mapped = legacy_map.get(normalized, normalized)
+        if mapped:
+            cmd += ["--ask-for-approval", mapped]
     if skip_git_repo_check:
         cmd.append("--skip-git-repo-check")
     if model:
@@ -107,7 +120,7 @@ if __name__ == "__main__":
             prompt=example_prompt,
             project_dir=r"D:\devs\pyqt5\gwen_test",
             model="gpt-5-codex",
-            approval_mode="full-auto",
+            approval_mode="auto",
             skip_git_repo_check=True,
             quiet=True,
             json_events=False,

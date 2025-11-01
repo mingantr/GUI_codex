@@ -85,8 +85,7 @@ Les commandes sont interprétées côté agent exactement comme dans la TUI.
 
    - Commande: `CODEX_CLI=npx -y @openai/codex` (ou `codex` si présent dans le PATH)
    - Mode: `CODEX_MODE=exec` (par défaut) ou `stdin`
-   - Approvals modernes: `CODEX_APPROVAL_MODE=auto` (transmis en `--approval-mode`; l’UI utilise cette valeur)
-   - Approvals legacy: `CODEX_APPROVALS=on-request` (repli automatique si `--approval-mode` n’est pas reconnu)
+   - Approvals: `CODEX_APPROVALS=on-request` ajoute `--ask-for-approval on-request`
    - Sandbox: `CODEX_SANDBOX=workspace-write` ajoute `-s/--sandbox workspace-write`
    - Modèle: `CODEX_MODEL=gpt-5-codex` ajoute `-m/--model`
    - Sans TUI: `CODEX_NO_TUI=1` tente `--no-tui` en mode exec (repli automatique si non reconnu)
@@ -104,8 +103,7 @@ Les commandes sont interprétées côté agent exactement comme dans la TUI.
 3) Lancez l’app (`run.bat`). Au clic sur « Envoyer », la sortie stdout/stderr est affichée. Timeout 120s.
 
 #### Approvals & sandbox
-- `--approval-mode`: valeurs `ask`, `auto`, `full-access`. L’UI expose ces modes avec le même texte explicatif que le CLI (par ex. « Auto – Codex can read files, make edits... »).
-- `--ask-for-approval`: valeurs `never`, `on-request`, `on-failure`, `untrusted` (utilisées automatiquement si le CLI ne connaît pas encore `--approval-mode`).
+- `--ask-for-approval`: valeurs `never`, `on-request`, `on-failure`, `untrusted`. L’UI expose les presets modernes (« Ask », « Auto », « Full Access ») et les traduit vers ces valeurs pour les CLIs historiques.
 - `-s/--sandbox`: choisissez `sandbox`, `workspace-write`, `workspace-read`, etc., selon le niveau d’accès disque souhaité.
 - `--full-auto`: équivaut à `-s workspace-write` + `-a on-failure`.
 - `--yolo`: désactive sandbox et approvals (dangereux, à réserver aux environnements de test).
@@ -125,13 +123,13 @@ from codex_wrapper import run_codex
 result = run_codex(
     prompt="je ne veux pas d'onglets, mais la base de données, et les casiers sur 2 colonnes",
     project_dir=r"D:\devs\pyqt5\gwen_test",
-    approval_mode="full-auto",
+    approval_mode="auto",
     skip_git_repo_check=True,
 )
 print(result.stdout)
 ```
 
-Le wrapper gère la découverte du binaire `codex`, injecte automatiquement le séparateur `--`, applique `--skip-git-repo-check` et expose stdout/stderr ainsi que la commande exécutée pour faciliter le débogage.
+Le wrapper gère la découverte du binaire `codex`, injecte automatiquement le séparateur `--`, applique `--skip-git-repo-check`, traduit les modes modernes vers `--ask-for-approval` et expose stdout/stderr ainsi que la commande exécutée pour faciliter le débogage.
 
 ### Configuration persistante de Codex
 Codex peut aussi lire un fichier de configuration persistant:

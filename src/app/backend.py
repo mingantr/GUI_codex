@@ -12,7 +12,6 @@ ENV_FILE = ".env"
 ENV_KEY_CMD = "CODEX_CLI"
 ENV_KEY_MODE = "CODEX_MODE"  # "exec" or "stdin"
 ENV_KEY_APPROVALS = "CODEX_APPROVALS"  # legacy flag for --ask-for-approval
-ENV_KEY_APPROVAL_MODE = "CODEX_APPROVAL_MODE"  # ask|auto|full-access
 ENV_KEY_NO_TUI = "CODEX_NO_TUI"  # "1" to prefer --no-tui when supported
 ENV_KEY_FULL_AUTO = "CODEX_FULL_AUTO"  # "1" to add --full-auto
 ENV_KEY_YOLO = "CODEX_YOLO"  # "1" to add --yolo (danger: disables sandbox + approvals)
@@ -86,7 +85,18 @@ def run_codex(prompt: str, cwd: Path) -> str:
     cmd_base_args = _split_command(cmd_base)
     mode = (os.environ.get(ENV_KEY_MODE, "exec") or "exec").lower()
     approvals = (os.environ.get(ENV_KEY_APPROVALS, "") or "").strip()
-    approval_mode = (os.environ.get(ENV_KEY_APPROVAL_MODE, "") or "").strip()
+    approval_mode = (os.environ.get("CODEX_APPROVAL_MODE", "") or "").strip()
+    if approval_mode and not approvals:
+        normalized = approval_mode.strip().lower()
+        mapping = {
+            "ask": "on-request",
+            "auto": "",
+            "full-access": "never",
+        }
+        if normalized in mapping:
+            approvals = mapping[normalized]
+        else:
+            approvals = approval_mode
     no_tui = (os.environ.get(ENV_KEY_NO_TUI, "1") == "1")
     full_auto = (os.environ.get(ENV_KEY_FULL_AUTO, "0") == "1")
     yolo = (os.environ.get(ENV_KEY_YOLO, "0") == "1")
@@ -181,9 +191,7 @@ def run_codex(prompt: str, cwd: Path) -> str:
                 parts += ["--profile", profile]
             if yolo:
                 parts.append("--yolo")
-            elif approval_mode:
-                parts += ["--approval-mode", approval_mode]
-            elif approvals:
+            if approvals:
                 parts += ["--ask-for-approval", approvals]
             if include_no_tui:
                 parts.append("--no-tui")
@@ -211,7 +219,6 @@ def run_codex(prompt: str, cwd: Path) -> str:
         attempted_cd_fallback = False
         attempted_no_tui_fallback = False
         attempted_skip_git_fallback = include_skip_git
-        attempted_approval_mode_fallback = False
 
         while True:
             cmd_args = build_cmd(use_cd_flag, include_no_tui, include_skip_git_flag)
@@ -255,32 +262,6 @@ def run_codex(prompt: str, cwd: Path) -> str:
                 attempted_cd_fallback = True
                 use_cd_flag = False
                 notes.append("[INFO] Relance avec -C (ancienne version du CLI détectée).")
-                continue
-
-            if (
-                approval_mode
-                and not attempted_approval_mode_fallback
-                and "--approval-mode" in err_text
-                and ("no such option" in err_text.lower() or "unknown option" in err_text.lower())
-            ):
-                attempted_approval_mode_fallback = True
-                legacy_map = {
-                    "ask": "on-request",
-                    "auto": "",
-                    "full-access": "never",
-                }
-                legacy_value = legacy_map.get(approval_mode, "")
-                if legacy_value:
-                    approvals = legacy_value
-                    notes.append(
-                        "[INFO] Relance avec --ask-for-approval (CLI sans --approval-mode)."
-                    )
-                else:
-                    approvals = ""
-                    notes.append(
-                        "[INFO] Relance sans --approval-mode (CLI historique détecté)."
-                    )
-                approval_mode = ""
                 continue
 
             combined = (out or "").strip()

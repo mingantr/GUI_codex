@@ -326,10 +326,6 @@ class CodexPanel(QWidget):
                 import os
 
                 mode, legacy = self._selected_approval_mode()
-                if mode:
-                    os.environ["CODEX_APPROVAL_MODE"] = mode
-                else:
-                    os.environ.pop("CODEX_APPROVAL_MODE", None)
                 if legacy:
                     os.environ["CODEX_APPROVALS"] = legacy
                 else:
