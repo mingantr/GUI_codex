@@ -23,6 +23,7 @@ Une interface PyQt5 simple pour utiliser Codex: zone de prompt, zone de réponse
 - Cases: cochez `/init`, `/status`, `JSON`, `Resume --last` (présentées en 2 colonnes) pour préfixer le prompt ou ajuster la sortie.
 - Approvals: choisissez « Ask », « Auto » ou « Full Access » dans la liste déroulante. Chaque option décrit exactement les permissions accordées (texte identique au CLI non interactif).
 - Envoyer: cliquez « Envoyer » ou utilisez Ctrl+Enter. L’appli transmet désormais le prompt au Codex CLI configuré (voir ci‑dessous) et affiche la sortie capturée.
+- Copier la réponse: donnez le focus à la zone de réponse et pressez Ctrl+C. Sans sélection, tout le bloc est copié automatiquement dans le presse-papiers.
 
 ### Historique et base de données
 - L’application journalise chaque échange dans une base SQLite (par défaut `~/.codex_gui/history.sqlite3`).
@@ -114,6 +115,23 @@ Les commandes sont interprétées côté agent exactement comme dans la TUI.
 - `-o <path>`: sauvegarde le dernier message (exposé via le bouton « Sortie » de l’UI).
 - `exec resume --last`: relance la dernière exécution (coche « Resume --last »).
 - `codex exec --json --output events.jsonl "..."`: capture structurée prête pour CI/CD.
+
+#### Wrapper Python prêt à l'emploi
+Un module autonome `codex_wrapper.py` est fourni à la racine pour piloter Codex depuis vos scripts sans TUI.
+
+```python
+from codex_wrapper import run_codex
+
+result = run_codex(
+    prompt="je ne veux pas d'onglets, mais la base de données, et les casiers sur 2 colonnes",
+    project_dir=r"D:\devs\pyqt5\gwen_test",
+    approval_mode="full-auto",
+    skip_git_repo_check=True,
+)
+print(result.stdout)
+```
+
+Le wrapper gère la découverte du binaire `codex`, injecte automatiquement le séparateur `--`, applique `--skip-git-repo-check` et expose stdout/stderr ainsi que la commande exécutée pour faciliter le débogage.
 
 ### Configuration persistante de Codex
 Codex peut aussi lire un fichier de configuration persistant:

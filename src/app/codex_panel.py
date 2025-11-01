@@ -4,7 +4,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QEvent
+from PyQt5.QtGui import QGuiApplication, QKeySequence
 from PyQt5.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -163,6 +164,7 @@ class CodexPanel(QWidget):
 
         self.response = QPlainTextEdit(self)
         self.response.setReadOnly(True)
+        self.response.installEventFilter(self)
         self.splitter.addWidget(self.response)
         self.splitter.setSizes([200, 400])
 
@@ -399,3 +401,17 @@ class CodexPanel(QWidget):
             return original(event)
 
         return handler
+
+    def eventFilter(self, obj, event):  # noqa: D401, ANN001
+        """Intercept copy shortcut on the response widget to copy the full text."""
+
+        if obj is self.response and event.type() == QEvent.KeyPress:
+            if event.matches(QKeySequence.Copy):
+                cursor = self.response.textCursor()
+                if cursor.hasSelection():
+                    return super().eventFilter(obj, event)
+                text = self.response.toPlainText()
+                if text:
+                    QGuiApplication.clipboard().setText(text)
+                    return True
+        return super().eventFilter(obj, event)
