@@ -20,8 +20,13 @@ Une interface PyQt5 simple pour utiliser Codex: zone de prompt, zone de réponse
 
 ## Utilisation
 - Dossier: sélectionner via le bouton « Changer… » ou choisir dans l'historique.
-- Cases: cochez `/init`, `/status`, `/approvals` pour préfixer votre prompt.
+- Cases: cochez `/init`, `/status`, `JSON`, `Resume --last` (présentées en 2 colonnes) pour préfixer le prompt ou ajuster la sortie.
 - Envoyer: cliquez « Envoyer » ou utilisez Ctrl+Enter. L’appli transmet désormais le prompt au Codex CLI configuré (voir ci‑dessous) et affiche la sortie capturée.
+
+### Historique et base de données
+- L’application journalise chaque échange dans une base SQLite (par défaut `~/.codex_gui/history.sqlite3`).
+- Le champ « Base de données » permet de choisir un autre fichier via « Parcourir… ».
+- Cliquez sur « Ouvrir… » pour consulter l’historique dans un tableau à deux colonnes (Prompt / Réponse), sans recourir à des onglets.
 
 ### Intégration Codex CLI
 L’application pilote Codex en mode non‑interactif via `codex exec` (par défaut) et passe le prompt comme argument, dans le dossier courant choisi. Vous pouvez aussi basculer en mode stdin.
