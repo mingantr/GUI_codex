@@ -4,7 +4,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QEvent
+from PyQt5.QtGui import QGuiApplication, QKeySequence
 from PyQt5.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -17,9 +18,22 @@ from PyQt5.QtWidgets import (
     QComboBox,
     QFileDialog,
     QLineEdit,
+    QGridLayout,
+    QMessageBox,
 )
 
-from .state import add_dir_to_history, get_current_dir, get_dir_history, set_current_dir
+from .database import ensure_database, save_exchange
+from .database_dialog import DatabaseDialog
+from .state import (
+    add_dir_to_history,
+    get_approval_mode,
+    get_current_dir,
+    get_database_path,
+    get_dir_history,
+    set_approval_mode,
+    set_current_dir,
+    set_database_path,
+)
 
 
 class CodexPanel(QWidget):
@@ -38,6 +52,7 @@ class CodexPanel(QWidget):
     def __init__(self, on_send: Optional[Callable[[str, Path], str]] = None, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._on_send = on_send
+        self._database_path: Optional[Path] = None
         self._setup_ui()
         self._load_state()
 
@@ -64,39 +79,79 @@ class CodexPanel(QWidget):
 
         root.addLayout(bar)
 
-        # Options/checks
-        opts = QHBoxLayout()
-        opts.setSpacing(12)
+        # Checkboxes arranged in two columns
+        checks = QGridLayout()
+        checks.setHorizontalSpacing(12)
+        checks.setVerticalSpacing(4)
+
         self.chk_init = QCheckBox("/init", self)
         self.chk_status = QCheckBox("/status", self)
-        opts.addWidget(self.chk_init)
-        opts.addWidget(self.chk_status)
+        self.chk_json = QCheckBox("JSON", self)
+        self.chk_resume = QCheckBox("Resume --last", self)
 
-        # Approvals mode (non-interactif)
+        checks.addWidget(self.chk_init, 0, 0)
+        checks.addWidget(self.chk_status, 0, 1)
+        checks.addWidget(self.chk_json, 1, 0)
+        checks.addWidget(self.chk_resume, 1, 1)
+        checks.setColumnStretch(0, 1)
+        checks.setColumnStretch(1, 1)
+        root.addLayout(checks)
+
+        # Approvals and extras row
+        opts = QHBoxLayout()
+        opts.setSpacing(12)
+
         self.combo_approvals = QComboBox(self)
-        self.combo_approvals.setMinimumWidth(160)
-        self.combo_approvals.addItem("Approvals: auto", "")
-        self.combo_approvals.addItem("Approvals: never", "never")
-        self.combo_approvals.addItem("Approvals: on-request", "on-request")
-        self.combo_approvals.addItem("Approvals: on-failure", "on-failure")
-        self.combo_approvals.addItem("Approvals: untrusted", "untrusted")
+        self.combo_approvals.setMinimumWidth(220)
+        self.combo_approvals.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        approval_options = [
+            (
+                "Ask – Codex can read files and answer questions.\n"
+                "Codex requires approval to make edits, run commands, or access network.",
+                ("ask", "on-request"),
+            ),
+            (
+                "Auto – Codex can read files, make edits, and run commands in the workspace.\n"
+                "Codex requires approval to work outside the workspace or access network.",
+                ("auto", ""),
+            ),
+            (
+                "Full Access – Codex can read files, make edits, and run commands with network access, without approval.",
+                ("full-access", "never"),
+            ),
+        ]
+        for idx, (label, data) in enumerate(approval_options):
+            self.combo_approvals.addItem(label, data)
+            self.combo_approvals.setItemData(idx, label, Qt.ToolTipRole)
+        self.combo_approvals.setCurrentIndex(1)
         opts.addWidget(self.combo_approvals)
 
-        # JSON output toggle
-        self.chk_json = QCheckBox("JSON", self)
-        opts.addWidget(self.chk_json)
-
-        # Profile name (optional)
         self.edit_profile = QLineEdit(self)
         self.edit_profile.setPlaceholderText("profile (optionnel)")
-        self.edit_profile.setMinimumWidth(140)
+        self.edit_profile.setMinimumWidth(160)
         opts.addWidget(self.edit_profile)
-
-        # Resume last toggle
-        self.chk_resume = QCheckBox("Resume --last", self)
-        opts.addWidget(self.chk_resume)
         opts.addStretch(1)
         root.addLayout(opts)
+
+        # Database row
+        db_row = QHBoxLayout()
+        db_row.setSpacing(8)
+        db_row.addWidget(QLabel("Base de données:", self))
+
+        self.edit_database = QLineEdit(self)
+        self.edit_database.setReadOnly(True)
+        self.edit_database.setMinimumWidth(260)
+        db_row.addWidget(self.edit_database, 1)
+
+        self.btn_db_browse = QPushButton("Parcourir…", self)
+        self.btn_db_browse.clicked.connect(self._pick_database)
+        db_row.addWidget(self.btn_db_browse)
+
+        self.btn_db_open = QPushButton("Ouvrir…", self)
+        self.btn_db_open.clicked.connect(self._open_database)
+        db_row.addWidget(self.btn_db_open)
+
+        root.addLayout(db_row)
 
         # Splitter: prompt (top) and response (bottom)
         self.splitter = QSplitter(Qt.Vertical, self)
@@ -109,6 +164,7 @@ class CodexPanel(QWidget):
 
         self.response = QPlainTextEdit(self)
         self.response.setReadOnly(True)
+        self.response.installEventFilter(self)
         self.splitter.addWidget(self.response)
         self.splitter.setSizes([200, 400])
 
@@ -143,6 +199,8 @@ class CodexPanel(QWidget):
             self.combo_dirs.addItem(item)
         cur = get_current_dir()
         self._set_current_dir(cur)
+        self._load_database_path()
+        self._load_approval_mode()
 
     def _set_current_dir(self, path: Path) -> None:
         # Persist and refresh history
@@ -174,6 +232,63 @@ class CodexPanel(QWidget):
                 self._set_current_dir(p)
             else:
                 self._append_info(f"Dossier inexistant: {text}")
+
+    def _load_database_path(self) -> None:
+        path = get_database_path()
+        try:
+            ensured = ensure_database(path)
+        except Exception as exc:  # noqa: BLE001
+            self._database_path = None
+            self._append_info(f"Base de données indisponible: {exc}")
+        else:
+            self._database_path = ensured
+            set_database_path(ensured)
+        self._update_database_path_display()
+
+    def _update_database_path_display(self) -> None:
+        if self._database_path is None:
+            self.edit_database.setText("(désactivée)")
+            self.btn_db_open.setEnabled(False)
+        else:
+            self.edit_database.setText(str(self._database_path))
+            self.btn_db_open.setEnabled(True)
+
+    def _pick_database(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Choisir une base SQLite",
+            str(self._database_path or get_database_path()),
+            "SQLite (*.sqlite3 *.db);;All files (*.*)",
+        )
+        if not path:
+            return
+        try:
+            ensured = ensure_database(Path(path))
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Erreur", f"Impossible de préparer la base:\n{exc}")
+            return
+        self._database_path = ensured
+        set_database_path(ensured)
+        self._update_database_path_display()
+
+    def _load_approval_mode(self) -> None:
+        wanted = get_approval_mode()
+        for idx in range(self.combo_approvals.count()):
+            data = self.combo_approvals.itemData(idx)
+            if isinstance(data, tuple) and data and data[0] == wanted:
+                self.combo_approvals.setCurrentIndex(idx)
+                break
+
+    def _open_database(self) -> None:
+        if self._database_path is None:
+            QMessageBox.information(
+                self,
+                "Base de données",
+                "Aucune base configurée. Choisissez un fichier pour activer l'historique.",
+            )
+            return
+        dlg = DatabaseDialog(self._database_path, self)
+        dlg.exec_()
 
     def _pick_output(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, "Choisir fichier de sortie (-o)", str(get_current_dir()))
@@ -210,12 +325,12 @@ class CodexPanel(QWidget):
                 # Pass approvals via environment for the backend
                 import os
 
-                appr = self.combo_approvals.currentData()
-                if appr:
-                    os.environ["CODEX_APPROVALS"] = str(appr)
+                mode, legacy = self._selected_approval_mode()
+                if legacy:
+                    os.environ["CODEX_APPROVALS"] = legacy
                 else:
-                    # Ensure default behavior if previously set
                     os.environ.pop("CODEX_APPROVALS", None)
+                set_approval_mode(mode or "auto")
                 # Force non-interactive exec mode by default
                 os.environ.setdefault("CODEX_MODE", "exec")
                 os.environ.setdefault("CODEX_NO_TUI", "1")
@@ -246,8 +361,16 @@ class CodexPanel(QWidget):
         else:
             out = msg
         self._append_exchange(msg, out)
+        self._log_exchange(msg, out)
 
     # Helpers
+    def _selected_approval_mode(self) -> tuple[str, str]:
+        data = self.combo_approvals.currentData()
+        if isinstance(data, tuple) and len(data) == 2:
+            mode, legacy = data
+            return str(mode), str(legacy)
+        return ("auto", "")
+
     def _append_info(self, text: str) -> None:
         stamp = datetime.now().strftime("%H:%M:%S")
         self.response.appendPlainText(f"[{stamp}] {text}")
@@ -258,6 +381,14 @@ class CodexPanel(QWidget):
         block = f"[{ts}] Prompt:\n{prompt}{sep}Réponse:\n{response}\n"
         self.response.appendPlainText(block)
 
+    def _log_exchange(self, prompt: str, response: str) -> None:
+        if self._database_path is None:
+            return
+        try:
+            save_exchange(prompt, response, self._database_path)
+        except Exception as exc:  # noqa: BLE001
+            self._append_info(f"Enregistrement en base impossible: {exc}")
+
     def _key_press_send_wrapper(self, original):
         def handler(event):
             if event is not None and event.modifiers() in (Qt.ControlModifier, Qt.MetaModifier) and event.key() in (Qt.Key_Return, Qt.Key_Enter):
@@ -266,3 +397,17 @@ class CodexPanel(QWidget):
             return original(event)
 
         return handler
+
+    def eventFilter(self, obj, event):  # noqa: D401, ANN001
+        """Intercept copy shortcut on the response widget to copy the full text."""
+
+        if obj is self.response and event.type() == QEvent.KeyPress:
+            if event.matches(QKeySequence.Copy):
+                cursor = self.response.textCursor()
+                if cursor.hasSelection():
+                    return super().eventFilter(obj, event)
+                text = self.response.toPlainText()
+                if text:
+                    QGuiApplication.clipboard().setText(text)
+                    return True
+        return super().eventFilter(obj, event)

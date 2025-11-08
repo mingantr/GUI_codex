@@ -11,6 +11,11 @@ APP = "PyQt5Template"
 
 KEY_CWD = "codex/current_dir"
 KEY_HISTORY = "codex/dir_history"
+KEY_DB_PATH = "codex/database_path"
+KEY_APPROVAL_MODE = "codex/approval_mode"
+
+DEFAULT_DB_DIR = Path.home() / ".codex_gui"
+DEFAULT_DB_FILE = DEFAULT_DB_DIR / "history.sqlite3"
 
 
 def _settings() -> QSettings:
@@ -53,4 +58,31 @@ def add_dir_to_history(path: Path, max_len: int = 10) -> List[str]:
     s.setValue(KEY_HISTORY, new_list)
     s.sync()
     return new_list
+
+
+def get_database_path() -> Path:
+    raw = _settings().value(KEY_DB_PATH, "")
+    if raw:
+        try:
+            return Path(str(raw))
+        except Exception:
+            pass
+    return DEFAULT_DB_FILE
+
+
+def set_database_path(path: Path) -> None:
+    s = _settings()
+    s.setValue(KEY_DB_PATH, str(path))
+    s.sync()
+
+
+def get_approval_mode() -> str:
+    value = _settings().value(KEY_APPROVAL_MODE, "auto")
+    return str(value) if value else "auto"
+
+
+def set_approval_mode(mode: str) -> None:
+    s = _settings()
+    s.setValue(KEY_APPROVAL_MODE, mode)
+    s.sync()
 
